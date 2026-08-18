@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.env
+*.pyc
+.vscode/
+node_modules/
+dist/
+*.db
+mlartifacts/
+backend/mlartifacts/
+backend/data/uploads/
+backend/data/processed/
+backend/data/models/
+backend/data/training/
+backend/data/temp/
+backend/data/reference/

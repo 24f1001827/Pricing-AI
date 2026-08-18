@@ -1,0 +1,40 @@
+# API
+fastapi
+uvicorn              
+
+# LangChain ecosystem
+langchain
+langgraph
+langchain-groq       
+langchain-google-genai
+langchain-openai
+langchain-anthropic
+# MLflow
+mlflow
+
+# Data
+pandas
+numpy
+openpyxl
+
+# Sandbox
+e2b-code-interpreter  # E2B sandbox for safe code execution
+
+# Monitoring
+evidently           
+
+# Utilities
+python-dotenv        
+python-multipart    
+pydantic             
+
+# Database
+sqlalchemy           
+psycopg[binary]
+
+# Authentication
+authlib
+python-jose
+passlib[bcrypt]
+
+apscheduler

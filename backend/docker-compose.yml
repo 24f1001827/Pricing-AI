@@ -1,0 +1,85 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: pricing
+      POSTGRES_USER: pricing
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pricing -d pricing"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    build: .
+    restart: unless-stopped
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql+psycopg://pricing:${POSTGRES_PASSWORD}@postgres:5432/pricing --artifacts-destination /app/mlartifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - application-data:/app/data
+      - mlflow-artifacts:/app/mlartifacts
+
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pricing:${POSTGRES_PASSWORD}@postgres:5432/pricing
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RUN_SCHEDULER: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    expose:
+      - "8000"
+    volumes:
+      - application-data:/app/data
+      - mlflow-artifacts:/app/mlartifacts
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      API_HOST: ${API_HOST:?set API_HOST in .env}
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: python -m core.scheduler_runner
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://pricing:${POSTGRES_PASSWORD}@postgres:5432/pricing
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      RUN_SCHEDULER: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    volumes:
+      - application-data:/app/data
+      - mlflow-artifacts:/app/mlartifacts
+
+volumes:
+  postgres-data:
+  application-data:
+  mlflow-artifacts:
+  caddy-data:
+  caddy-config:
