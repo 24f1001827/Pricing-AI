@@ -5,7 +5,7 @@
       <div class="page-header">
         <div>
           <h1>Orders</h1>
-          <p class="subtitle">Log customer purchases and view sales analytics</p>
+          <p class="subtitle">Log customer purchases, manage business calendar, and view sales analytics</p>
         </div>
         <div style="display:flex;gap:10px">
           <n-button @click="ordersStore.downloadTemplate()"><n-icon><DownloadOutline /></n-icon> Template</n-button>
@@ -62,7 +62,7 @@
         <n-alert v-if="importError" type="error" style="margin-top:12px">{{ importError }}</n-alert>
       </div>
 
-      <!-- Tabs: Orders / Analytics / Customers / By Product -->
+      <!-- Tabs -->
       <n-tabs v-model:value="activeTab" type="line" animated>
         <n-tab-pane name="orders" tab="Recent Orders">
           <div class="card">
@@ -93,23 +93,31 @@
 
         <n-tab-pane name="products" tab="By Product">
           <div class="card">
-            <n-data-table
-              :columns="productColumns"
-              :data="byProduct"
-              :bordered="false"
-              :striped="true"
-            />
+            <n-data-table :columns="productColumns" :data="byProduct" :bordered="false" :striped="true" />
           </div>
         </n-tab-pane>
 
         <n-tab-pane name="customers" tab="Customers">
           <div class="card">
-            <n-data-table
-              :columns="customerColumns"
-              :data="customers"
-              :bordered="false"
-              :striped="true"
-            />
+            <n-data-table :columns="customerColumns" :data="customers" :bordered="false" :striped="true" />
+          </div>
+        </n-tab-pane>
+
+        <n-tab-pane name="calendar" tab="Business Calendar">
+          <div class="card">
+            <h3 style="margin: 0 0 8px">Holidays, Festivals &amp; Closed Days</h3>
+            <p style="font-size: 13px; color: var(--text-muted); margin: 0 0 16px">
+              Closed days are excluded from nightly evaluation and forecast as 0 demand; holidays and festivals improve demand predictions.
+            </p>
+            <div class="calendar-form">
+              <n-input v-model:value="calendarForm.date" placeholder="YYYY-MM-DD" style="width: 150px" />
+              <n-checkbox v-model:checked="calendarForm.is_closed">Closed</n-checkbox>
+              <n-checkbox v-model:checked="calendarForm.is_holiday">Holiday</n-checkbox>
+              <n-checkbox v-model:checked="calendarForm.is_festival">Festival</n-checkbox>
+              <n-input v-model:value="calendarForm.note" placeholder="Optional note (e.g. Diwali sale)" style="flex: 1" />
+              <n-button type="primary" @click="saveCalendar">Save Date</n-button>
+            </div>
+            <n-data-table :columns="calendarColumns" :data="calendarEntries" :bordered="false" :striped="true" size="small" />
           </div>
         </n-tab-pane>
       </n-tabs>
@@ -199,14 +207,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, watch, h, nextTick } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch, h, nextTick } from 'vue'
 import { useOrdersStore } from '@/stores/orders'
 import { useProductsStore } from '@/stores/products'
 import {
   NButton, NDataTable, NModal, NForm, NFormItemGi,
   NInput, NInputNumber, NSelect, NCheckbox, NDatePicker, NGrid,
   NAlert, NUpload, NTabs, NTabPane, NRadioGroup, NRadioButton,
-  NDivider, NDescriptions, NDescriptionsItem, NPopconfirm, NIcon
+  NDivider, NDescriptions, NDescriptionsItem, NPopconfirm, NIcon, NTag
 } from 'naive-ui'
 import { CashOutline, CloudUploadOutline, DownloadOutline, PeopleOutline, ReceiptOutline, TrendingUpOutline } from '@vicons/ionicons5'
 import AppNav from '@/components/AppNav.vue'
@@ -219,6 +227,7 @@ const orders = ref([])
 const byProduct = ref([])
 const customers = ref([])
 const aggregated = ref([])
+const calendarEntries = ref([])
 const summary = ref(null)
 const products = ref([])
 const activeTab = ref('orders')
@@ -232,12 +241,21 @@ const orderError = ref(null)
 const importResult = ref(null)
 const importError = ref(null)
 const chartCanvas = ref(null)
+let chartInstance = null
+
+const calendarForm = ref({
+  date: new Date().toISOString().slice(0, 10),
+  is_closed: false,
+  is_holiday: false,
+  is_festival: false,
+  note: '',
+})
 
 const channelOptions = [
   { label: 'In-Store', value: 'in-store' },
   { label: 'Online', value: 'online' },
   { label: 'Phone', value: 'phone' },
-  { label: 'Wholesale', value: 'wholesale' }
+  { label: 'Wholesale', value: 'wholesale' },
 ]
 
 const productOptions = computed(() =>
@@ -250,7 +268,7 @@ const orderForm = ref({
   order_time: Date.now(),
   channel: null,
   is_promotion: false,
-  line_items: [{ product_id: null, quantity: 1, unit_price: null, unit_cost: null, inventory_level: null }]
+  line_items: [{ product_id: null, quantity: 1, unit_price: null, unit_cost: null, inventory_level: null }],
 })
 
 const orderTotal = computed(() =>
@@ -279,10 +297,10 @@ const orderColumns = [
       h(NButton, { size: 'tiny', onClick: () => { selectedOrder.value = r; showDetail.value = true } }, { default: () => 'View' }),
       h(NPopconfirm, { onPositiveClick: () => deleteOrder(r.order_id) }, {
         default: () => 'Delete this order?',
-        trigger: () => h(NButton, { size: 'tiny', quaternary: true }, { default: () => '🗑' })
-      })
-    ])
-  }
+        trigger: () => h(NButton, { size: 'tiny', quaternary: true }, { default: () => 'Delete' }),
+      }),
+    ]),
+  },
 ]
 
 const productColumns = [
@@ -291,7 +309,7 @@ const productColumns = [
   { title: 'Revenue', key: 'total_revenue', render: r => `$${r.total_revenue?.toFixed(2)}` },
   { title: 'Profit', key: 'total_profit', render: r => `$${r.total_profit?.toFixed(2)}` },
   { title: 'Avg Price', key: 'avg_price', render: r => `$${r.avg_price?.toFixed(2)}` },
-  { title: 'Orders', key: 'orders' }
+  { title: 'Orders', key: 'orders' },
 ]
 
 const customerColumns = [
@@ -300,7 +318,26 @@ const customerColumns = [
   { title: 'Orders', key: 'total_orders' },
   { title: 'Total Spent', key: 'total_spent', render: r => `$${r.total_spent?.toFixed(2)}` },
   { title: 'First Order', key: 'first_order' },
-  { title: 'Last Order', key: 'last_order' }
+  { title: 'Last Order', key: 'last_order' },
+]
+
+const calendarColumns = [
+  { title: 'Date', key: 'date' },
+  {
+    title: 'Flags',
+    key: 'flags',
+    render: r => h('div', { style: 'display:flex;gap:6px' }, [
+      r.is_closed ? h(NTag, { type: 'error', size: 'small' }, { default: () => 'Closed' }) : null,
+      r.is_holiday ? h(NTag, { type: 'warning', size: 'small' }, { default: () => 'Holiday' }) : null,
+      r.is_festival ? h(NTag, { type: 'info', size: 'small' }, { default: () => 'Festival' }) : null,
+    ]),
+  },
+  { title: 'Note', key: 'note', render: r => r.note || '—' },
+  {
+    title: '',
+    key: 'del',
+    render: r => h(NButton, { size: 'tiny', quaternary: true, onClick: () => deleteCalendar(r.id) }, { default: () => 'Remove' }),
+  },
 ]
 
 function rowProps() {
@@ -325,7 +362,7 @@ function autoFillPrice(productId, index) {
 
 async function submitOrder() {
   orderError.value = null
-  const validItems = orderForm.value.line_items.filter(i => i.product_id && i.unit_price)
+  const validItems = orderForm.value.line_items.filter(i => i.product_id && i.unit_price != null)
   if (!validItems.length) {
     orderError.value = 'Add at least one item with product and price'
     return
@@ -338,7 +375,7 @@ async function submitOrder() {
       order_time: new Date(orderForm.value.order_time).toISOString(),
       channel: orderForm.value.channel,
       is_promotion: orderForm.value.is_promotion,
-      line_items: validItems
+      line_items: validItems,
     })
     orders.value = await ordersStore.fetchOrders()
     summary.value = await ordersStore.fetchSummary()
@@ -346,7 +383,7 @@ async function submitOrder() {
     orderForm.value = {
       customer_name: '', customer_email: '', order_time: Date.now(),
       channel: null, is_promotion: false,
-      line_items: [{ product_id: null, quantity: 1, unit_price: null, unit_cost: null, inventory_level: null }]
+      line_items: [{ product_id: null, quantity: 1, unit_price: null, unit_cost: null, inventory_level: null }],
     }
   } catch (err) {
     orderError.value = err.response?.data?.detail || 'Failed to create order'
@@ -387,22 +424,39 @@ function drawChart() {
     Chart.register(...registerables)
     const existing = Chart.getChart(chartCanvas.value)
     if (existing) existing.destroy()
-    new Chart(chartCanvas.value, {
+    chartInstance = new Chart(chartCanvas.value, {
       type: 'bar',
       data: {
         labels: aggregated.value.map(d => d.period),
         datasets: [
-          { label: 'Revenue', data: aggregated.value.map(d => d.revenue), backgroundColor: 'rgba(99,102,241,0.7)', yAxisID: 'y' },
-          { label: 'Profit', data: aggregated.value.map(d => d.profit), backgroundColor: 'rgba(16,185,129,0.7)', yAxisID: 'y' }
-        ]
+          { label: 'Revenue', data: aggregated.value.map(d => d.revenue), backgroundColor: 'rgba(22,115,90,0.75)', yAxisID: 'y' },
+          { label: 'Profit', data: aggregated.value.map(d => d.profit), backgroundColor: 'rgba(183,121,31,0.75)', yAxisID: 'y' },
+        ],
       },
       options: {
-        responsive: true, maintainAspectRatio: false,
+        responsive: true,
+        maintainAspectRatio: false,
         plugins: { legend: { position: 'top' } },
-        scales: { y: { beginAtZero: true, title: { display: true, text: 'Amount ($)' } } }
-      }
+        scales: { y: { beginAtZero: true, title: { display: true, text: 'Amount ($)' } } },
+      },
     })
   })
+}
+
+async function fetchCalendar() {
+  const res = await api.get('/orders/calendar')
+  calendarEntries.value = res.data
+}
+
+async function saveCalendar() {
+  await api.post('/orders/calendar', calendarForm.value)
+  calendarForm.value.note = ''
+  await fetchCalendar()
+}
+
+async function deleteCalendar(id) {
+  await api.delete(`/orders/calendar/${id}`)
+  await fetchCalendar()
 }
 
 watch(activeTab, async (tab) => {
@@ -415,12 +469,22 @@ watch(activeTab, async (tab) => {
     const res = await api.get('/orders/customers')
     customers.value = res.data
   }
+  if (tab === 'calendar') {
+    await fetchCalendar()
+  }
 })
 
 onMounted(async () => {
   orders.value = await ordersStore.fetchOrders()
   summary.value = await ordersStore.fetchSummary()
   products.value = await productsStore.fetchProducts()
+})
+
+onBeforeUnmount(() => {
+  if (chartInstance) {
+    chartInstance.destroy()
+    chartInstance = null
+  }
 })
 </script>
 
@@ -433,11 +497,15 @@ onMounted(async () => {
 .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
 .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px; display: flex; align-items: center; gap: 16px; }
 .stat-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
-.stat-icon.orders { background:#eaf3f5; color:#326c79; }.stat-icon.revenue { background:#e7f5ef; color:#16735a; }.stat-icon.profit { background:#fbf3e1; color:#a0691a; }.stat-icon.customers { background:#f5ebee; color:#a84d5b; }
+.stat-icon.orders { background:#eaf3f5; color:#326c79; }
+.stat-icon.revenue { background:#e7f5ef; color:#16735a; }
+.stat-icon.profit { background:#fbf3e1; color:#a0691a; }
+.stat-icon.customers { background:#f5ebee; color:#a84d5b; }
 .stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 4px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); margin: 0; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 24px; }
 .line-item-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+.calendar-form { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
 .order-totals { margin-top: 16px; padding: 12px 16px; background: var(--surface-2); border-radius: var(--radius-sm); font-size: 14px; }
 code { background: #f0f4ff; color: #6366f1; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
 </style>

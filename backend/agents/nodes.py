@@ -682,4 +682,3 @@ def register_model(state: AgentState) -> dict:
         "mlflow_model_uri": model_uri,
         "best_model_file_path": model_file_path
     }
-

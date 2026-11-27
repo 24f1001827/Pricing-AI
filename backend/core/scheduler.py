@@ -1,13 +1,23 @@
+from datetime import datetime, timedelta
+import threading
+import uuid
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from core.logger import get_logger
+from sqlalchemy import text
+
 from core.config import DATABASE_URL, SCHEDULER_TIMEZONE
 from core.database import SessionLocal
-from core.database_models import User, Order, OrderLineItem, TrainingJob, DailyEvaluation, Prediction, BusinessCalendar
-import uuid
-from datetime import datetime, timedelta
-import pandas as pd
-from sqlalchemy import text
+from core.database_models import (
+    BusinessCalendar,
+    DailyEvaluation,
+    Order,
+    OrderLineItem,
+    Prediction,
+    TrainingJob,
+    User,
+)
+from core.logger import get_logger
 
 logger = get_logger(__name__)
 scheduler = BackgroundScheduler()
@@ -32,6 +42,9 @@ def nightly_evaluation():
         if not _acquire_scheduler_lock(db):
             logger.warning("Nightly evaluation skipped because another scheduler holds the lock")
             return
+        from api.training import recover_stale_jobs
+
+        recover_stale_jobs(db)
         yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
         for user in db.query(User).all():
             try:
@@ -46,10 +59,11 @@ def nightly_evaluation():
 def _evaluate_user(user, date_str: str, db):
     from api.training import check_retrain_triggers, run_pipeline
 
-    calendar = db.query(BusinessCalendar).filter(
-        BusinessCalendar.user_id == user.id,
-        BusinessCalendar.date == date_str
-    ).first()
+    calendar = (
+        db.query(BusinessCalendar)
+        .filter(BusinessCalendar.user_id == user.id, BusinessCalendar.date == date_str)
+        .first()
+    )
 
     if calendar and calendar.is_closed:
         db.add(DailyEvaluation(user_id=user.id, date=date_str, training_job_id="N/A", skipped=True))
@@ -58,11 +72,16 @@ def _evaluate_user(user, date_str: str, db):
 
     evaluation_date = datetime.strptime(date_str, "%Y-%m-%d")
     forecast_start = evaluation_date - timedelta(days=1)
-    latest = db.query(Prediction).filter(
-        Prediction.user_id == user.id,
-        Prediction.created_at >= forecast_start,
-        Prediction.created_at < evaluation_date,
-    ).order_by(Prediction.created_at.desc()).first()
+    latest = (
+        db.query(Prediction)
+        .filter(
+            Prediction.user_id == user.id,
+            Prediction.created_at >= forecast_start,
+            Prediction.created_at < evaluation_date,
+        )
+        .order_by(Prediction.created_at.desc())
+        .first()
+    )
     if not latest or not latest.demand_forecast:
         return
 
@@ -70,41 +89,59 @@ def _evaluate_user(user, date_str: str, db):
     if not orders:
         return
 
-    items = db.query(OrderLineItem).filter(
-        OrderLineItem.user_id == user.id,
-        OrderLineItem.order_id.in_([o.order_id for o in orders])
-    ).all()
+    items = (
+        db.query(OrderLineItem)
+        .filter(
+            OrderLineItem.user_id == user.id,
+            OrderLineItem.order_id.in_([o.order_id for o in orders]),
+        )
+        .all()
+    )
     actual_units = sum(i.quantity for i in items)
     predicted_units = latest.demand_forecast.get("total", {}).get("day1")
-    error = abs(actual_units - predicted_units) / max(actual_units, 1) if predicted_units else None
+    error = (
+        round(abs(actual_units - predicted_units) / max(actual_units, 1), 4)
+        if predicted_units is not None
+        else None
+    )
 
-    db.add(DailyEvaluation(
-        user_id=user.id,
-        date=date_str,
-        training_job_id=latest.training_job_id,
-        predicted_units=predicted_units,
-        actual_units=actual_units,
-        error=error,
-        skipped=False
-    ))
+    db.add(
+        DailyEvaluation(
+            user_id=user.id,
+            date=date_str,
+            training_job_id=latest.training_job_id,
+            predicted_units=predicted_units,
+            actual_units=actual_units,
+            error=error,
+            skipped=False,
+        )
+    )
     db.commit()
 
-    triggers = check_retrain_triggers(user.id, db)
+    triggers = check_retrain_triggers(user.id, db, persist=True)
     if triggers["should_retrain"]:
-        active_job = db.query(TrainingJob).filter(
-            TrainingJob.user_id == user.id,
-            TrainingJob.status.in_(["pending", "training"])
-        ).first()
+        active_job = (
+            db.query(TrainingJob)
+            .filter(TrainingJob.user_id == user.id, TrainingJob.status.in_(["pending", "training"]))
+            .first()
+        )
         if active_job:
             logger.info(f"Auto-retraining skipped for user {user.id}; job {active_job.unique_id} is already active")
             return
         logger.info(f"Auto-retraining for user {user.id}: {triggers['triggers']}")
         unique_id = str(uuid.uuid4())
-        job = TrainingJob(user_id=user.id, unique_id=unique_id, status="pending", trigger=",".join(triggers["triggers"]))
+        job = TrainingJob(
+            user_id=user.id,
+            unique_id=unique_id,
+            status="pending",
+            trigger=",".join(triggers["triggers"]),
+        )
         db.add(job)
         db.commit()
-        import threading
-        t = threading.Thread(target=run_pipeline, args=(user.id, unique_id, user.optimization_objective or "revenue"))
+        t = threading.Thread(
+            target=run_pipeline,
+            args=(user.id, unique_id, user.optimization_objective or "revenue"),
+        )
         t.daemon = True
         t.start()
 

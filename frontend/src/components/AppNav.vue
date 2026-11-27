@@ -8,6 +8,7 @@
       <router-link to="/dashboard" class="nav-link"><n-icon><GridOutline /></n-icon> Dashboard</router-link>
       <router-link to="/products" class="nav-link"><n-icon><CubeOutline /></n-icon> Products</router-link>
       <router-link to="/orders" class="nav-link"><n-icon><ReceiptOutline /></n-icon> Orders</router-link>
+      <router-link to="/inventory" class="nav-link"><n-icon><LayersOutline /></n-icon> Inventory</router-link>
     </div>
     <div class="nav-right">
       <div class="user-info">
@@ -26,11 +27,14 @@
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { NButton, NIcon } from 'naive-ui'
-import { CubeOutline, GridOutline, ReceiptOutline } from '@vicons/ionicons5'
+import { CubeOutline, GridOutline, LayersOutline, ReceiptOutline } from '@vicons/ionicons5'
 
 const router = useRouter()
 const authStore = useAuthStore()
-function handleLogout() { authStore.logout(); router.push({ name: 'login' }) }
+function handleLogout() {
+  authStore.logout()
+  router.push({ name: 'login' })
+}
 </script>
 
 <style scoped>

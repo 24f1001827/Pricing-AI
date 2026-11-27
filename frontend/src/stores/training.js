@@ -21,10 +21,15 @@ export const useTrainingStore = defineStore('training', () => {
     return res.data
   }
 
+  async function fetchEvaluations() {
+    const res = await api.get('/training/evaluations')
+    return res.data
+  }
+
   async function checkRetrain() {
     const res = await api.get('/training/should-retrain')
     return res.data
   }
 
-  return { jobs, startTraining, getStatus, fetchHistory, checkRetrain }
+  return { jobs, startTraining, getStatus, fetchHistory, fetchEvaluations, checkRetrain }
 })

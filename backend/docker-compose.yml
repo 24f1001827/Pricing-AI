@@ -24,6 +24,11 @@ services:
     volumes:
       - application-data:/app/data
       - mlflow-artifacts:/app/mlartifacts
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3)\""]
+      interval: 20s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
@@ -37,7 +42,7 @@ services:
       postgres:
         condition: service_healthy
       mlflow:
-        condition: service_started
+        condition: service_healthy
     expose:
       - "8000"
     volumes:
@@ -50,7 +55,8 @@ services:
     environment:
       API_HOST: ${API_HOST:?set API_HOST in .env}
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -71,11 +77,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      mlflow:
-        condition: service_started
+      api:
+        condition: service_healthy
     volumes:
       - application-data:/app/data
       - mlflow-artifacts:/app/mlartifacts
+    healthcheck:
+      disable: true
 
 volumes:
   postgres-data:

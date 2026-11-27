@@ -24,6 +24,14 @@
         <n-button size="small" type="warning" style="margin-left: 12px" @click="startTraining">Retrain Now</n-button>
       </n-alert>
 
+      <n-alert v-if="inventoryAlertCount > 0" type="info" style="margin-bottom: 20px">
+        <template #header>Inventory Attention Needed</template>
+        {{ inventoryAlertCount }} product(s) are below reorder point or at stockout risk.
+        <n-button size="small" type="primary" ghost style="margin-left: 12px" @click="router.push('/inventory')">
+          Review Inventory
+        </n-button>
+      </n-alert>
+
       <!-- Stats -->
       <div class="stats-grid">
         <div class="stat-card">
@@ -36,8 +44,8 @@
         <div class="stat-card">
           <div class="stat-icon orders"><n-icon><ReceiptOutline /></n-icon></div>
           <div>
-            <p class="stat-label">Transactions</p>
-            <p class="stat-value">{{ summary?.total_records?.toLocaleString() || 0 }}</p>
+            <p class="stat-label">Orders</p>
+            <p class="stat-value">{{ summary?.total_orders?.toLocaleString() || 0 }}</p>
           </div>
         </div>
         <div class="stat-card">
@@ -61,7 +69,7 @@
         <div class="card">
           <div class="card-header">
             <h3>Training Jobs</h3>
-            <n-tag :type="latestJob?.status === 'completed' ? 'success' : latestJob?.status === 'training' ? 'warning' : 'default'" size="small">
+            <n-tag :type="statusType(latestJob?.status)" size="small">
               {{ latestJob?.status || 'No jobs' }}
             </n-tag>
           </div>
@@ -72,8 +80,14 @@
           <div v-else class="job-list">
             <div v-for="job in trainingJobs.slice(0, 5)" :key="job.unique_id" class="job-item">
               <div>
-                <p class="job-id">{{ job.unique_id.slice(0, 12) }}...</p>
-                <p class="job-meta">{{ formatDate(job.created_at) }} · {{ job.trigger }}</p>
+                <p class="job-id">
+                  {{ job.unique_id.slice(0, 12) }}...
+                  <span v-if="job.model_name" class="model-pill">{{ job.model_name }}</span>
+                </p>
+                <p class="job-meta">
+                  {{ formatDate(job.created_at) }} · {{ job.trigger }}
+                  <span v-if="job.metrics?.r2 != null"> · R² {{ job.metrics.r2 }}</span>
+                </p>
               </div>
               <div class="job-actions">
                 <n-tag :type="statusType(job.status)" size="small">{{ job.status }}</n-tag>
@@ -86,7 +100,7 @@
                   View
                 </n-button>
                 <n-button
-                  v-if="job.status === 'training'"
+                  v-if="job.status === 'training' || job.status === 'pending'"
                   size="tiny"
                   @click="router.push({ name: 'training', params: { uniqueId: job.unique_id } })"
                 >
@@ -105,25 +119,49 @@
               <div class="action-icon"><n-icon><CubeOutline /></n-icon></div>
               <div>
                 <p class="action-title">Manage Products</p>
-                <p class="action-desc">Add or update your product catalog</p>
+                <p class="action-desc">Update catalog, costs, price guardrails, and stock</p>
               </div>
               <span class="action-arrow">→</span>
             </div>
             <div class="action-item" @click="router.push('/orders')">
               <div class="action-icon"><n-icon><BarChartOutline /></n-icon></div>
               <div>
-                <p class="action-title">Log Sales Data</p>
-                <p class="action-desc">Record transactions or import from CSV</p>
+                <p class="action-title">Log Sales & Calendar</p>
+                <p class="action-desc">Record orders, import CSVs, or mark holidays</p>
               </div>
               <span class="action-arrow">→</span>
             </div>
-            <div class="action-item" v-if="latestJob?.status === 'completed'" @click="router.push({ name: 'predictions', params: { uniqueId: latestJob.unique_id } })">
+            <div class="action-item" @click="router.push('/inventory')">
+              <div class="action-icon"><n-icon><LayersOutline /></n-icon></div>
+              <div>
+                <p class="action-title">Inventory Optimization</p>
+                <p class="action-desc">Check reorder points, safety stock, and stock-aware pricing</p>
+              </div>
+              <span class="action-arrow">→</span>
+            </div>
+            <div
+              class="action-item"
+              v-if="latestCompletedJob"
+              @click="router.push({ name: 'predictions', params: { uniqueId: latestCompletedJob.unique_id } })"
+            >
               <div class="action-icon"><n-icon><AnalyticsOutline /></n-icon></div>
               <div>
                 <p class="action-title">View Latest Predictions</p>
-                <p class="action-desc">See pricing recommendations</p>
+                <p class="action-desc">See pricing curves, forecasts, and demand drivers</p>
               </div>
               <span class="action-arrow">→</span>
+            </div>
+          </div>
+
+          <div v-if="evaluations.length" class="eval-strip">
+            <p class="eval-title">Recent Forecast Accuracy (Nightly Check)</p>
+            <div class="eval-row" v-for="ev in evaluations.slice(0, 3)" :key="ev.id">
+              <span>{{ ev.date }}</span>
+              <span v-if="ev.skipped" class="muted">Closed / Skipped</span>
+              <span v-else>
+                Pred {{ ev.predicted_units?.toFixed(1) }} vs Actual {{ ev.actual_units }}
+                <strong v-if="ev.error != null">({{ Math.round((1 - Math.min(ev.error, 1)) * 100) }}% acc)</strong>
+              </span>
             </div>
           </div>
         </div>
@@ -136,26 +174,42 @@
 import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useSalesStore } from '@/stores/sales'
+import { useOrdersStore } from '@/stores/orders'
+import { useProductsStore } from '@/stores/products'
 import { useTrainingStore } from '@/stores/training'
 import { NButton, NAlert, NIcon, NTag } from 'naive-ui'
-import { AnalyticsOutline, BarChartOutline, CalendarOutline, CubeOutline, ReceiptOutline, SparklesOutline, TrendingUpOutline } from '@vicons/ionicons5'
+import {
+  AnalyticsOutline,
+  BarChartOutline,
+  CalendarOutline,
+  CubeOutline,
+  LayersOutline,
+  ReceiptOutline,
+  SparklesOutline,
+  TrendingUpOutline,
+} from '@vicons/ionicons5'
 import AppNav from '@/components/AppNav.vue'
-import api from '@/services/api'
 
 const router = useRouter()
 const authStore = useAuthStore()
-const salesStore = useSalesStore()
+const ordersStore = useOrdersStore()
+const productsStore = useProductsStore()
 const trainingStore = useTrainingStore()
 
 const summary = ref(null)
 const trainingJobs = ref([])
+const evaluations = ref([])
+const inventoryItems = ref([])
 const retrainSuggestion = ref(null)
 const isTraining = ref(false)
 const error = ref(null)
 
 const firstName = computed(() => authStore.user?.name?.split(' ')[0] || '')
 const latestJob = computed(() => trainingJobs.value[0] || null)
+const latestCompletedJob = computed(() => trainingJobs.value.find(j => j.status === 'completed') || null)
+const inventoryAlertCount = computed(
+  () => inventoryItems.value.filter(i => i.stock_status === 'stockout_risk' || i.stock_status === 'reorder_now').length
+)
 const dateRange = computed(() => {
   if (!summary.value?.date_range) return 'No data'
   return `${summary.value.date_range.start} → ${summary.value.date_range.end}`
@@ -177,13 +231,20 @@ function formatDate(dt) {
 
 onMounted(async () => {
   await authStore.fetchUser()
-  summary.value = await salesStore.fetchSummary()
-  trainingJobs.value = await trainingStore.fetchHistory()
+  const [sumRes, jobsRes, evalRes, invRes] = await Promise.allSettled([
+    ordersStore.fetchSummary(),
+    trainingStore.fetchHistory(),
+    trainingStore.fetchEvaluations(),
+    productsStore.fetchInventorySummary(),
+  ])
+  if (sumRes.status === 'fulfilled') summary.value = sumRes.value
+  if (jobsRes.status === 'fulfilled') trainingJobs.value = jobsRes.value
+  if (evalRes.status === 'fulfilled') evaluations.value = evalRes.value
+  if (invRes.status === 'fulfilled') inventoryItems.value = invRes.value?.items || []
+
   try {
-    const res = await api.get('/training/should-retrain')
-    retrainSuggestion.value = res.data
+    retrainSuggestion.value = await trainingStore.checkRetrain()
   } catch {
-    // Retraining advice is optional; the dashboard remains usable without it.
     retrainSuggestion.value = null
   }
 })
@@ -210,17 +271,12 @@ async function startTraining() {
 .subtitle { color: var(--text-secondary); font-size: 14px; margin: 0; }
 
 .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 20px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
+.stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 20px; display: flex; align-items: center; gap: 16px; }
 .stat-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
-.stat-icon.products { background: #e7f5ef; color: #16735a; }.stat-icon.orders { background: #eaf3f5; color: #326c79; }.stat-icon.revenue { background: #fbf3e1; color: #a0691a; }.stat-icon.range { background: #f5ebee; color: #a84d5b; }
+.stat-icon.products { background: #e7f5ef; color: #16735a; }
+.stat-icon.orders { background: #eaf3f5; color: #326c79; }
+.stat-icon.revenue { background: #fbf3e1; color: #a0691a; }
+.stat-icon.range { background: #f5ebee; color: #a84d5b; }
 .stat-label { font-size: 12px; color: var(--text-muted); margin: 0 0 4px; text-transform: uppercase; letter-spacing: 0.5px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); margin: 0; }
 
@@ -233,7 +289,8 @@ async function startTraining() {
 .job-list { display: flex; flex-direction: column; gap: 12px; }
 .job-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .job-item:last-child { border-bottom: none; }
-.job-id { font-size: 13px; font-family: monospace; color: var(--text-primary); margin: 0 0 2px; }
+.job-id { font-size: 13px; font-family: monospace; color: var(--text-primary); margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
+.model-pill { font-family: inherit; font-size: 11px; background: var(--primary-light); color: var(--primary); padding: 2px 7px; border-radius: 999px; font-weight: 600; }
 .job-meta { font-size: 11px; color: var(--text-muted); margin: 0; }
 .job-actions { display: flex; align-items: center; gap: 8px; }
 
@@ -245,6 +302,13 @@ async function startTraining() {
 .action-desc { font-size: 12px; color: var(--text-muted); margin: 0; }
 .action-arrow { margin-left: auto; color: var(--text-muted); font-size: 16px; }
 
+.eval-strip { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
+.eval-title { font-size: 12px; font-weight: 700; color: var(--text-secondary); margin: 0 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+.eval-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-primary); padding: 4px 0; }
+
 .empty-state { text-align: center; padding: 32px 0; color: var(--text-secondary); font-size: 14px; }
 .muted { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+
+@media (max-width: 900px) { .stats-grid, .grid-2 { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 600px) { .stats-grid, .grid-2 { grid-template-columns: 1fr; } }
 </style>

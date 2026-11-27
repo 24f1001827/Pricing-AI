@@ -1,154 +1,157 @@
-from agents.llm import get_llm
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from langchain_core.tools import tool
-from core.logger import get_logger
 import json
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
+
+from core.logger import get_logger
+from ml.strategist import _has_configured_llm_key
 
 logger = get_logger(__name__)
 
-llm = get_llm()
 
 def create_chat_agent(
     predictions: dict,
     feature_importance: dict,
     model_metrics: dict,
     column_mapping: dict,
-    price_demand_curve: list
+    price_demand_curve: list,
 ):
-    # Build context about this specific business
+    product_results = predictions.get("product_results") or []
+    inventory_recs = predictions.get("inventory_recommendations") or []
+
+    compact_products = [
+        {
+            "product": p.get("product"),
+            "optimal_price": p.get("optimal_price"),
+            "inventory_adjusted_price": p.get("inventory_adjusted_price"),
+            "predicted_demand": p.get("predicted_demand"),
+            "expected_revenue": p.get("expected_revenue"),
+            "stock_status": p.get("stock_status"),
+        }
+        for p in product_results[:20]
+    ]
+
     context = f"""
-    You are a pricing intelligence assistant for a business owner.
-    You have access to their sales data analysis and pricing model results.
-    
-    THEIR MODEL RESULTS:
-    - Optimal price: ${predictions.get('optimal_price')}
-    - Predicted demand at optimal price: {predictions.get('predicted_demand')} units
-    - Expected revenue at optimal price: ${predictions.get('expected_revenue')}
-    
-    MODEL PERFORMANCE:
-    - R2 Score: {model_metrics.get('r2')} (how well the model fits the data, 1.0 is perfect)
-    - RMSE: {model_metrics.get('rmse')} (average prediction error in units)
-    - MAE: {model_metrics.get('mae')}
-    
-    WHAT DRIVES DEMAND (feature importance):
-    {json.dumps(feature_importance, indent=2)}
-    
-    COLUMN MAPPING:
-    - Price column: {column_mapping.get('pricing_column')}
-    - Demand column: {column_mapping.get('demand_column')}
-    - Date column: {column_mapping.get('date_column')}
-    
-    You can answer questions about their pricing, demand patterns, and business insights.
-    When asked about a specific price scenario, use the price-demand curve data to calculate results.
-    Be conversational, clear, and avoid technical jargon.
-    Always relate answers back to their specific business context.
-    """
+You are a pricing and inventory intelligence assistant for a business owner.
+You have access to their trained model results, per-product price recommendations, and inventory alerts.
+
+PORTFOLIO SUMMARY:
+- Optimization objective: {predictions.get('optimization_objective', 'revenue')}
+- Winning model: {predictions.get('model_name') or 'AutoML ensemble'}
+- Strategy: {predictions.get('strategy_explanation') or 'Chronological cross-validated demand forecasting'}
+- Headline optimal/avg price: ${predictions.get('optimal_price')}
+- Predicted daily demand: {predictions.get('predicted_demand')} units
+- Expected daily revenue: ${predictions.get('expected_revenue')}
+
+MODEL PERFORMANCE:
+- R2 Score: {model_metrics.get('r2')}
+- RMSE: {model_metrics.get('rmse')}
+- MAE: {model_metrics.get('mae')}
+
+PER-PRODUCT RECOMMENDATIONS:
+{json.dumps(compact_products, indent=2)}
+
+INVENTORY STATUS:
+{json.dumps(inventory_recs[:20], indent=2)}
+
+WHAT DRIVES DEMAND (feature importance):
+{json.dumps(feature_importance, indent=2)}
+
+Be conversational, concise, and practical. Relate answers directly to their specific products, prices, and stock levels.
+"""
 
     @tool
-    def run_scenario(price: float) -> str:
-        """Run a price scenario analysis. Given a price, returns predicted demand and revenue."""
-        logger.info(f"Running scenario for price: {price}")
-        
-        # Find closest price point in curve
-        closest = min(
-            price_demand_curve,
-            key=lambda x: abs(x["price"] - price)
-        )
-        
-        # If price is outside curve range, extrapolate simply
-        if price < price_demand_curve[0]["price"] or price > price_demand_curve[-1]["price"]:
-            return f"Price ${price} is outside the observed range. Based on trend extrapolation: predicted demand ≈ {closest['predicted_demand']} units, revenue ≈ ${closest['revenue']}. Note: predictions outside observed price range are less reliable."
-        
+    def run_scenario(price: float, product_id: str = "") -> str:
+        """Run a price scenario analysis. Optionally specify product_id for SKU-level simulation."""
+        logger.info(f"Running scenario for price={price}, product_id={product_id}")
+        curve = price_demand_curve
+        target_opt = predictions.get("optimal_price")
+        target_rev = predictions.get("expected_revenue")
+
+        if product_id:
+            match = next((p for p in product_results if p.get("product") == product_id), None)
+            if match and match.get("curve"):
+                curve = match["curve"]
+                target_opt = match.get("optimal_price")
+                target_rev = match.get("expected_revenue")
+
+        if not curve:
+            return "Price curve data is unavailable."
+
+        closest = min(curve, key=lambda x: abs(x["price"] - price))
+        outside = price < curve[0]["price"] or price > curve[-1]["price"]
         return json.dumps({
-            "price": price,
+            "product_id": product_id or "portfolio",
+            "requested_price": price,
+            "closest_modeled_price": closest["price"],
             "predicted_demand": closest["predicted_demand"],
             "expected_revenue": closest["revenue"],
+            "outside_observed_range": outside,
             "vs_optimal": {
-                "price_diff": round(price - predictions.get("optimal_price"), 2),
-                "revenue_diff": round(closest["revenue"] - predictions.get("expected_revenue"), 2)
-            }
+                "price_diff": round(price - (target_opt or 0), 2),
+                "revenue_diff": round(closest["revenue"] - (target_rev or 0), 2),
+            },
         })
 
     @tool
     def get_feature_importance() -> str:
-        """Returns which factors most influence demand for this business."""
-        logger.info("Getting feature importance")
+        """Return which factors most influence demand for this business."""
         if not feature_importance:
             return "Feature importance data is not available for this model."
-        sorted_features = sorted(
-            feature_importance.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-        result = "Factors driving demand (most to least important):\n"
-        for feature, importance in sorted_features:
-            result += f"- {feature}: {round(importance * 100, 1)}% influence\n"
-        return result
+        sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)
+        lines = [f"- {feat}: {round(imp * 100, 1)}% influence" for feat, imp in sorted_features[:10]]
+        return "Top demand drivers:\n" + "\n".join(lines)
 
     @tool
-    def get_price_curve_summary() -> str:
-        """Returns a summary of how revenue changes across price points."""
-        logger.info("Getting price curve summary")
-        if not price_demand_curve:
-            return "Price curve data is not available."
-        
-        min_price = price_demand_curve[0]["price"]
-        max_price = price_demand_curve[-1]["price"]
-        max_revenue_point = max(price_demand_curve, key=lambda x: x["revenue"])
-        min_revenue_point = min(price_demand_curve, key=lambda x: x["revenue"])
-        
-        return json.dumps({
-            "price_range": f"${min_price} to ${max_price}",
-            "highest_revenue_price": max_revenue_point["price"],
-            "highest_revenue": max_revenue_point["revenue"],
-            "lowest_revenue_price": min_revenue_point["price"],
-            "lowest_revenue": min_revenue_point["revenue"]
-        })
+    def get_inventory_alerts() -> str:
+        """Return products at risk of stockout, needing reorder, or overstocked."""
+        if not inventory_recs:
+            return "No inventory data available."
+        return json.dumps(inventory_recs[:20])
 
-    tools = [run_scenario, get_feature_importance, get_price_curve_summary]
-    llm_with_tools = llm.bind_tools(tools)
+    tools = [run_scenario, get_feature_importance, get_inventory_alerts]
 
     def chat(message: str, history: list) -> str:
+        if not _has_configured_llm_key():
+            top_driver = next(iter(feature_importance), "price") if feature_importance else "price"
+            at_risk = [r["product_id"] for r in inventory_recs if r.get("stock_status") in ("stockout_risk", "reorder_now")]
+            risk_note = f" Products needing attention/reorder: {', '.join(at_risk)}." if at_risk else ""
+            return (
+                f"LLM chat key is not configured, so here is a direct model summary: "
+                f"Using {predictions.get('model_name') or 'AutoML'}, headline expected daily revenue is "
+                f"${predictions.get('expected_revenue')} across {predictions.get('predicted_demand')} predicted units, "
+                f"with '{top_driver}' as the top demand driver.{risk_note}"
+            )
+
+        from agents.llm import get_llm
+
+        llm = get_llm()
+        llm_with_tools = llm.bind_tools(tools)
+
         messages = [SystemMessage(content=context)]
-        
         for msg in history:
             if msg["role"] == "user":
                 messages.append(HumanMessage(content=msg["content"]))
             else:
                 messages.append(AIMessage(content=msg["content"]))
-        
         messages.append(HumanMessage(content=message))
-        
-        # First LLM call — may decide to use tools
+
         response = llm_with_tools.invoke(messages)
-        
-        # If LLM called tools, execute them and feed results back
-        if response.tool_calls:
+        if getattr(response, "tool_calls", None):
             messages.append(response)
-            
             for tool_call in response.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
-                
-                logger.info(f"Executing tool: {tool_name} with args: {tool_args}")
-                
-                # Find and execute the right tool
                 tool_result = None
                 for t in tools:
                     if t.name == tool_name:
                         tool_result = t.invoke(tool_args)
                         break
-                
-                from langchain_core.messages import ToolMessage
-                messages.append(ToolMessage(
-                    content=str(tool_result),
-                    tool_call_id=tool_call["id"]
-                ))
-            
-            # Second LLM call — generate final response with tool results
+                messages.append(
+                    ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"])
+                )
             final_response = llm.invoke(messages)
             return final_response.content
-        
+
         return response.content
 
     return chat

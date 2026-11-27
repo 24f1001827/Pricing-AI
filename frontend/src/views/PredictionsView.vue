@@ -5,7 +5,7 @@
       <div class="page-header">
         <div>
           <h1>Pricing Intelligence</h1>
-          <p class="subtitle">AI-powered recommendations for your business</p>
+          <p class="subtitle">AI-powered price, demand, and inventory recommendations</p>
         </div>
         <n-tag :type="objectiveType" size="medium">
           Optimizing: {{ predictions?.optimization_objective || 'revenue' }}
@@ -20,18 +20,22 @@
       <n-alert v-else-if="error" type="error">{{ error }}</n-alert>
 
       <template v-else-if="predictions">
+        <n-alert v-if="notice" type="success" closable @close="notice = null" style="margin-bottom: 16px">
+          {{ notice }}
+        </n-alert>
+
         <!-- Overall Metrics -->
         <div class="stats-grid" style="margin-bottom: 24px">
           <div class="stat-card highlight">
-            <p class="stat-label">Optimal Price</p>
+            <p class="stat-label">{{ predictions.product_results?.length > 1 ? 'Avg Optimal Price' : 'Optimal Price' }}</p>
             <p class="stat-value">${{ predictions.optimal_price }}</p>
           </div>
           <div class="stat-card">
-            <p class="stat-label">Predicted Demand</p>
+            <p class="stat-label">Predicted Daily Demand</p>
             <p class="stat-value">{{ predictions.predicted_demand }} units</p>
           </div>
           <div class="stat-card">
-            <p class="stat-label">Expected Revenue</p>
+            <p class="stat-label">Expected Daily Revenue</p>
             <p class="stat-value">${{ predictions.expected_revenue?.toLocaleString() }}</p>
           </div>
           <div class="stat-card">
@@ -40,12 +44,29 @@
           </div>
         </div>
 
+        <!-- Model Strategy & Metrics -->
+        <div v-if="predictions.model_summary?.model_name" class="card" style="margin-bottom: 20px">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap">
+            <div style="flex: 1; min-width: 260px">
+              <h3 style="margin: 0 0 6px">Model Strategy: {{ predictions.model_summary.model_name }}</h3>
+              <p style="font-size: 13px; color: var(--text-secondary); margin: 0">
+                {{ predictions.model_summary.strategy_explanation }}
+              </p>
+            </div>
+            <div class="metrics-strip" v-if="predictions.model_summary.metrics">
+              <div class="mini-metric"><span>R²</span><strong>{{ predictions.model_summary.metrics.r2 }}</strong></div>
+              <div class="mini-metric"><span>RMSE</span><strong>{{ predictions.model_summary.metrics.rmse }}</strong></div>
+              <div class="mini-metric"><span>MAE</span><strong>{{ predictions.model_summary.metrics.mae }}</strong></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Demand Forecast -->
         <div class="card" style="margin-bottom: 20px">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px">
             <div>
               <h3 style="margin: 0 0 4px">Demand Forecast</h3>
-              <p style="font-size: 13px; color: var(--text-muted); margin: 0">Predicted units to be sold</p>
+              <p style="font-size: 13px; color: var(--text-muted); margin: 0">Predicted units to be sold (calendar-aware)</p>
             </div>
             <n-radio-group v-model:value="forecastPeriod" size="small">
               <n-radio-button value="day1">Tomorrow</n-radio-button>
@@ -54,20 +75,19 @@
             </n-radio-group>
           </div>
 
-          <!-- Per product forecast -->
-          <div v-if="predictions.product_results?.length" class="product-forecast-grid">
+          <div class="product-forecast-grid">
             <div
               v-for="product in predictions.product_results"
               :key="product.product"
               class="forecast-card"
             >
-              <div class="forecast-product">{{ product.product }}</div>
+              <div class="forecast-product">{{ product.product_name || product.product }}</div>
               <div class="forecast-value">{{ product.forecast?.[forecastPeriod]?.toFixed(0) || '—' }} units</div>
               <div class="forecast-label">{{ forecastLabel }}</div>
             </div>
-            <div class="forecast-card total">
-              <div class="forecast-product">Total</div>
-              <div class="forecast-value">{{ predictions.demand_forecast?.total?.[forecastPeriod]?.toFixed(0) || '—' }}</div>
+            <div v-if="predictions.demand_forecast?.total" class="forecast-card total">
+              <div class="forecast-product">Portfolio Total</div>
+              <div class="forecast-value">{{ predictions.demand_forecast.total?.[forecastPeriod]?.toFixed(0) || '—' }} units</div>
               <div class="forecast-label">{{ forecastLabel }}</div>
             </div>
           </div>
@@ -82,7 +102,7 @@
               v-model:value="selectedProduct"
               :options="productOptions"
               size="small"
-              style="width: 200px"
+              style="width: 220px"
             />
           </div>
 
@@ -100,7 +120,7 @@
             <div>
               <h3 style="margin: 0 0 4px">Price vs Revenue Curve</h3>
               <p style="font-size: 13px; color: var(--text-muted); margin: 0">
-                {{ selectedProduct === 'all' ? 'Portfolio total' : `Product: ${selectedProduct}` }}
+                {{ selectedProduct === 'all' ? 'Portfolio aggregate' : `Product: ${selectedProduct}` }}
               </p>
             </div>
           </div>
@@ -125,12 +145,12 @@
         <div class="card">
           <h3 style="margin: 0 0 4px">Ask Your Pricing Assistant</h3>
           <p style="font-size: 13px; color: var(--text-muted); margin: 0 0 16px">
-            Ask anything about your pricing, run scenarios, or explore what-if questions
+            Ask anything about your pricing, inventory risks, or explore what-if scenarios
           </p>
 
           <div class="chat-messages" ref="chatContainer">
             <div v-if="chatHistory.length === 0" class="chat-empty">
-              <p>Ask about your pricing, compare scenarios, or explore demand drivers.</p>
+              <p>Ask about your pricing, compare scenarios, or check inventory reorder recommendations.</p>
             </div>
             <div v-for="(msg, i) in chatHistory" :key="i" class="message" :class="msg.role">
               <div class="message-bubble">{{ msg.content }}</div>
@@ -157,7 +177,7 @@
           <div class="chat-input">
             <n-input
               v-model:value="chatMessage"
-              placeholder="Ask about pricing, demand, or run a scenario..."
+              placeholder="Ask about pricing, demand, or inventory..."
               @keyup.enter="sendMessage"
               :disabled="chatLoading"
             />
@@ -172,9 +192,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick, watch, h } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch, h } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePredictionsStore } from '@/stores/predictions'
+import { useProductsStore } from '@/stores/products'
 import {
   NButton, NInput, NDataTable, NTag, NAlert, NSpin,
   NRadioGroup, NRadioButton, NSelect
@@ -184,12 +205,15 @@ import api from '@/services/api'
 
 const route = useRoute()
 const predictionsStore = usePredictionsStore()
+const productsStore = useProductsStore()
 
 const uniqueId = route.params.uniqueId
 const loading = ref(true)
 const error = ref(null)
+const notice = ref(null)
 const predictions = ref(null)
 const chartCanvas = ref(null)
+let chartInstance = null
 const selectedProduct = ref('all')
 const forecastPeriod = ref('day1')
 const chatHistory = ref([])
@@ -206,7 +230,7 @@ const objectiveType = computed(() => {
 
 const productOptions = computed(() => {
   const opts = [{ label: 'All Products (Portfolio)', value: 'all' }]
-  predictions.value?.product_results?.forEach(p => opts.push({ label: p.product, value: p.product }))
+  predictions.value?.product_results?.forEach(p => opts.push({ label: p.product_name || p.product, value: p.product }))
   return opts
 })
 
@@ -215,30 +239,63 @@ const samplePoints = computed(() => {
     ? predictions.value?.price_demand_curve
     : predictions.value?.product_results?.find(p => p.product === selectedProduct.value)?.curve
   if (!curve) return []
-  return curve.filter((_, i) => i % 10 === 0)
+  const step = Math.max(1, Math.floor(curve.length / 10))
+  return curve.filter((_, i) => i % step === 0)
 })
 
 const productColumns = [
-  { title: 'Product', key: 'product', render: r => h('code', { style: 'background:#f0f4ff;color:#6366f1;padding:2px 6px;border-radius:4px;font-size:12px' }, r.product) },
+  {
+    title: 'Product',
+    key: 'product',
+    render: r => h('code', { style: 'background:#f0f4ff;color:#6366f1;padding:2px 6px;border-radius:4px;font-size:12px' }, r.product),
+  },
   { title: 'Optimal Price', key: 'optimal_price', render: r => h('strong', {}, `$${r.optimal_price}`) },
+  {
+    title: 'Stock-Aware Price',
+    key: 'inventory_adjusted_price',
+    render: r => r.inventory_adjusted_price != null ? `$${r.inventory_adjusted_price}` : '—',
+  },
   { title: 'Predicted Demand', key: 'predicted_demand', render: r => `${r.predicted_demand} units` },
   { title: 'Expected Revenue', key: 'expected_revenue', render: r => `$${r.expected_revenue?.toFixed(2)}` },
-  { title: 'Expected Profit', key: 'expected_profit', render: r => r.expected_profit != null ? `$${r.expected_profit?.toFixed(2)}` : '—' }
+  { title: 'Expected Profit', key: 'expected_profit', render: r => r.expected_profit != null ? `$${r.expected_profit?.toFixed(2)}` : '—' },
+  {
+    title: 'Action',
+    key: 'apply',
+    render: r => h(
+      NButton,
+      {
+        size: 'tiny',
+        type: 'primary',
+        ghost: true,
+        onClick: () => applyPrice(r.product, r.inventory_adjusted_price ?? r.optimal_price),
+      },
+      { default: () => 'Apply Price' }
+    ),
+  },
 ]
 
 const curveColumns = [
   { title: 'Price', key: 'price', render: r => `$${r.price}` },
   { title: 'Predicted Demand', key: 'predicted_demand', render: r => `${r.predicted_demand} units` },
   { title: 'Revenue', key: 'revenue', render: r => `$${r.revenue}` },
-  { title: 'Profit', key: 'profit', render: r => r.profit != null ? `$${r.profit}` : '—' }
+  { title: 'Profit', key: 'profit', render: r => r.profit != null ? `$${r.profit}` : '—' },
 ]
 
 const suggestions = [
   'Why is this the optimal price?',
-  'What if I raise price by 20%?',
-  'Which product should I discount?',
-  'What drives demand most?'
+  'Which products need restocking?',
+  'What drives demand most?',
+  'What if I raise price by 15%?',
 ]
+
+async function applyPrice(productId, price) {
+  try {
+    await productsStore.applyRecommendedPrice(productId, price)
+    notice.value = `Applied $${price} as the new base price for ${productId}.`
+  } catch (err) {
+    error.value = err.response?.data?.detail || 'Could not apply price'
+  }
+}
 
 onMounted(async () => {
   try {
@@ -249,6 +306,13 @@ onMounted(async () => {
     error.value = 'Failed to load predictions'
   } finally {
     loading.value = false
+  }
+})
+
+onBeforeUnmount(() => {
+  if (chartInstance) {
+    chartInstance.destroy()
+    chartInstance = null
   }
 })
 
@@ -267,11 +331,10 @@ function drawChart() {
 
   import('chart.js').then(({ Chart, registerables }) => {
     Chart.register(...registerables)
-    // Destroy existing chart
     const existing = Chart.getChart(chartCanvas.value)
     if (existing) existing.destroy()
 
-    new Chart(chartCanvas.value, {
+    chartInstance = new Chart(chartCanvas.value, {
       type: 'line',
       data: {
         labels: curve.map(p => `$${p.price}`),
@@ -279,20 +342,20 @@ function drawChart() {
           {
             label: 'Revenue',
             data: curve.map(p => p.revenue),
-            borderColor: '#6366f1',
-            backgroundColor: 'rgba(99,102,241,0.08)',
+            borderColor: '#16735a',
+            backgroundColor: 'rgba(22,115,90,0.08)',
             tension: 0.4,
-            yAxisID: 'y'
+            yAxisID: 'y',
           },
           {
             label: 'Demand',
             data: curve.map(p => p.predicted_demand),
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16,185,129,0.08)',
+            borderColor: '#326c79',
+            backgroundColor: 'rgba(50,108,121,0.08)',
             tension: 0.4,
-            yAxisID: 'y1'
-          }
-        ]
+            yAxisID: 'y1',
+          },
+        ],
       },
       options: {
         responsive: true,
@@ -300,9 +363,9 @@ function drawChart() {
         plugins: { legend: { position: 'top' } },
         scales: {
           y: { type: 'linear', position: 'left', title: { display: true, text: 'Revenue ($)' } },
-          y1: { type: 'linear', position: 'right', title: { display: true, text: 'Demand (units)' }, grid: { drawOnChartArea: false } }
-        }
-      }
+          y1: { type: 'linear', position: 'right', title: { display: true, text: 'Demand (units)' }, grid: { drawOnChartArea: false } },
+        },
+      },
     })
   })
 }
@@ -316,11 +379,11 @@ async function sendMessage() {
   try {
     const res = await api.post(`/predictions/chat/${uniqueId}`, {
       message: msg,
-      history: chatHistory.value.slice(0, -1)
+      history: chatHistory.value.slice(0, -1),
     })
     chatHistory.value.push({ role: 'assistant', content: res.data.response })
-  } catch (error) {
-    console.error('Unable to send pricing-assistant message', error)
+  } catch (err) {
+    console.error('Unable to send pricing-assistant message', err)
     chatHistory.value.push({ role: 'assistant', content: 'Sorry, I could not process that. Try again.' })
   } finally {
     chatLoading.value = false
@@ -348,29 +411,22 @@ function sendSuggestion(s) {
 .stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 0 0 6px; }
 .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); margin: 0; }
 
+.metrics-strip { display: flex; gap: 10px; }
+.mini-metric { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 14px; text-align: center; }
+.mini-metric span { display: block; font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+.mini-metric strong { font-size: 14px; color: var(--text-primary); }
+
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 24px; }
 .chart-container { height: 300px; }
 
-.product-forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+.product-forecast-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .forecast-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; text-align: center; }
 .forecast-card.total { border-color: var(--primary); background: var(--primary-light); }
 .forecast-product { font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 6px; }
 .forecast-value { font-size: 20px; font-weight: 700; color: var(--text-primary); }
 .forecast-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-.chat-messages {
-  min-height: 200px;
-  max-height: 350px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 16px;
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  background: var(--surface-2);
-}
+.chat-messages { min-height: 200px; max-height: 350px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--surface-2); }
 .chat-empty { text-align: center; color: var(--text-muted); font-size: 14px; padding: 24px 0; }
 .message { display: flex; }
 .message.user { justify-content: flex-end; }
@@ -385,6 +441,5 @@ function sendSuggestion(s) {
 
 .chat-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .chat-input { display: flex; gap: 8px; }
-
 .loading-state { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 80px 0; color: var(--text-muted); }
 </style>

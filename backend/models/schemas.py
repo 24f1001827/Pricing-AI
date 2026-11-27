@@ -1,38 +1,32 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
-from datetime import datetime
 import re
 
-class ColumnMapping(BaseModel):
-    pricing_column: str
-    demand_column: str
-    date_column: str
-    other_columns: List[str] = []
 
-class CSVValidationResult(BaseModel):
-    is_relevant: bool
-    reason: str
-    column_mapping: Optional[ColumnMapping] = None
+class TrainingPlan(BaseModel):
+    candidate_models: List[
+        Literal[
+            "hist_gb_monotonic",
+            "hist_gb_poisson",
+            "ridge_elasticity",
+            "random_forest",
+            "extra_trees",
+        ]
+    ] = Field(min_length=1)
+    use_log_price: bool = True
+    enable_lags: bool = True
+    outlier_clip_quantile: Optional[float] = Field(default=0.99, ge=0.9, le=1.0)
+    strategy_explanation: str = ""
 
-class CriticReview(BaseModel):
-    approved: bool
-    restart_from: Optional[Literal["eda", "feature_engineering", "train_model"]] = None
-    eda_feedback: Optional[str] = None
-    feature_engineering_feedback: Optional[str] = None
-    model_training_feedback: Optional[str] = None
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
 
-class ChatRequest(BaseModel):
-    message: str
-    history: List[ChatMessage] = []
 
-class StructuredTrainingDataset(BaseModel):
-    unique_id: str
-    rows: int
-    message: str
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    history: List[ChatMessage] = []
 
 
 class LoginRequest(BaseModel):
@@ -50,3 +44,7 @@ class LoginRequest(BaseModel):
 
 class RegisterRequest(LoginRequest):
     name: str = Field(min_length=2, max_length=100)
+
+
+class AdminCreateUserRequest(RegisterRequest):
+    is_admin: bool = False
