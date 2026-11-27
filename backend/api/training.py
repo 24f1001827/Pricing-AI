@@ -31,7 +31,7 @@ from ml.optimizer import compute_and_store_predictions
 from ml.profiler import aggregate_daily_sku_demand, profile_dataset
 from ml.strategist import build_training_plan
 from ml.trainer import train_best_pipeline
-from monitoring.drift import check_drift
+from scipy.stats import ks_2samp
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -153,7 +153,19 @@ def check_retrain_triggers(user_id: int, db: Session, persist: bool = True) -> d
                     if c in reference_df.columns and c in current_df.columns
                 ]
                 if not reference_df.empty and not current_df.empty and drift_cols:
-                    drift = check_drift(reference_df[drift_cols], current_df[drift_cols], RETRAIN_DRIFT_THRESHOLD)
+                    drifted = []
+                    for col in drift_cols:
+                        try:
+                            _, p = ks_2samp(reference_df[col].dropna(), current_df[col].dropna())
+                            if p < 0.05:
+                                drifted.append(col)
+                        except Exception:
+                            pass
+                    drift = {
+                        "drift_detected": len(drifted) > 0,
+                        "drift_share": round(len(drifted) / len(drift_cols), 3),
+                        "drifted_columns": drifted,
+                    }
                     result["details"]["drift"] = drift
                     if drift.get("drift_share", 0) >= RETRAIN_DRIFT_THRESHOLD:
                         result["triggers"].append("data_drift")
